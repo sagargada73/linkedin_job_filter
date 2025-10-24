@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LinkedIn Job Filter</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div class="container">
+      <h1>LinkedIn Job Filter</h1>
+      <p class="subtitle">Choose which jobs to hide</p>
+
+      <div class="settings">
+        <div class="setting-item">
+          <label class="switch">
+            <input type="checkbox" id="hideApplied" checked />
+            <span class="slider"></span>
+          </label>
+          <div class="setting-label">
+            <span class="setting-title">Hide Applied Jobs</span>
+            <span class="setting-description"
+              >Jobs you've already applied to</span
+            >
+          </div>
+        </div>
+
+        <div class="setting-item">
+          <label class="switch">
+            <input type="checkbox" id="hideReposted" checked />
+            <span class="slider"></span>
+          </label>
+          <div class="setting-label">
+            <span class="setting-title">Hide Reposted Jobs</span>
+            <span class="setting-description"
+              >Jobs that have been reposted</span
+            >
+          </div>
+        </div>
+
+        <div class="setting-item">
+          <label class="switch">
+            <input type="checkbox" id="hidePromoted" checked />
+            <span class="slider"></span>
+          </label>
+          <div class="setting-label">
+            <span class="setting-title">Hide Promoted Jobs</span>
+            <span class="setting-description">Sponsored job postings</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="footer">
+        <p class="status" id="status"></p>
+        <p class="hint">💡 Not working? Refresh the LinkedIn page once</p>
+      </div>
+    </div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
