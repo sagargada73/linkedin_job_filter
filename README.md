@@ -1,5 +1,7 @@
 # LinkedIn Job Filter 🎯
 
+[![Chrome Web Store](https://img.shields.io/badge/Chrome%20Web%20Store-Install-blue?logo=google-chrome&style=flat-square)](https://chromewebstore.google.com/detail/linkedin-job-filter/jjaiomkkpgffeofagbcnkmdeombgiipo)
+
 A Chrome extension that automatically hides Applied, Promoted, and Reposted jobs on LinkedIn, making your job search cleaner and more efficient.
 
 ## ✨ Features
@@ -37,7 +39,15 @@ A Chrome extension that automatically hides Applied, Promoted, and Reposted jobs
    - Find "LinkedIn Job Filter"
    - Click the pin icon to keep it visible
 
-### Method 2: Chrome Web Store (Coming Soon)
+### Method 2: Chrome Web Store (stable install)
+
+The extension is published on the Chrome Web Store for easy one-click installation:
+
+- Chrome Web Store: https://chromewebstore.google.com/detail/linkedin-job-filter/jjaiomkkpgffeofagbcnkmdeombgiipo
+
+Install from the store to get automatic updates. Current published version: v1.0.0.
+
+If you find the extension useful, please consider leaving a review for the current version (v1.0.0) — reviews help improve visibility and provide valuable feedback.
 The extension will be available on the Chrome Web Store soon for easy one-click installation.
 
 ## 🚀 Usage
