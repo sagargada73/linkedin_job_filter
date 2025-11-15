@@ -30,24 +30,24 @@ function saveSettings() {
     hidePromoted: document.getElementById("hidePromoted").checked,
   };
 
-  console.log("💾 Saving settings:", settings);
+  debug.log("💾 Saving settings:", settings);
 
   // Save to storage
   chrome.storage.sync.set({ filterSettings: settings }, function () {
-    console.log("✅ Settings saved to storage");
+    debug.log("✅ Settings saved to storage");
 
     // Show status message
     showStatus("Settings saved!");
 
     // Send message to content script to update filters
     chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
-      console.log("📋 Active tabs:", tabs);
+      debug.log("📋 Active tabs:", tabs);
 
       if (tabs[0]) {
-        console.log("🌐 Current tab URL:", tabs[0].url);
+        debug.log("🌐 Current tab URL:", tabs[0].url);
 
         if (tabs[0].url && tabs[0].url.includes("linkedin.com")) {
-          console.log("📤 Sending message to tab", tabs[0].id);
+          debug.log("📤 Sending message to tab", tabs[0].id);
 
           chrome.tabs.sendMessage(
             tabs[0].id,
@@ -57,23 +57,23 @@ function saveSettings() {
             },
             function (response) {
               if (chrome.runtime.lastError) {
-                console.error(
+                debug.error(
                   "❌ Could not send message:",
                   chrome.runtime.lastError.message
                 );
                 showStatus("Please refresh the page");
               } else {
-                console.log("✅ Message sent successfully:", response);
+                debug.log("✅ Message sent successfully:", response);
                 showStatus("Filters updated!");
               }
             }
           );
         } else {
-          console.log("⚠️ Not on LinkedIn, skipping message");
+          debug.log("⚠️ Not on LinkedIn, skipping message");
           showStatus("Open LinkedIn jobs page");
         }
       } else {
-        console.log("❌ No active tab found");
+        debug.log("❌ No active tab found");
       }
     });
   });

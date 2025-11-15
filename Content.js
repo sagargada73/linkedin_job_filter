@@ -1,5 +1,5 @@
 // LinkedIn Job Filter Extension
-console.log("LinkedIn Job Filter Extension loaded! 🎯");
+debug.log("LinkedIn Job Filter Extension loaded! 🎯");
 
 // Check if we're on a jobs page
 function isOnJobsPage() {
@@ -8,11 +8,11 @@ function isOnJobsPage() {
 
 // Diagnostic function to discover LinkedIn's current DOM structure
 function diagnosticScan() {
-  console.log("🔍 DIAGNOSTIC SCAN - Looking for job elements...");
+  debug.log("🔍 DIAGNOSTIC SCAN - Looking for job elements...");
 
   // Try to find ANY list items
   const allLis = document.querySelectorAll("li");
-  console.log(`Found ${allLis.length} total <li> elements on page`);
+  debug.log(`Found ${allLis.length} total <li> elements on page`);
 
   // Look for elements with job-related data attributes
   const jobIdElements = document.querySelectorAll("[data-job-id]");
@@ -21,24 +21,24 @@ function diagnosticScan() {
   );
   const cardElements = document.querySelectorAll("[class*='job']");
 
-  console.log(`Elements with data-job-id: ${jobIdElements.length}`);
-  console.log(
+  debug.log(`Elements with data-job-id: ${jobIdElements.length}`);
+  debug.log(
     `Elements with data-occludable-job-id: ${occludableElements.length}`
   );
-  console.log(`Elements with 'job' in class: ${cardElements.length}`);
+  debug.log(`Elements with 'job' in class: ${cardElements.length}`);
 
   // Sample the first few elements
   if (jobIdElements.length > 0) {
-    console.log("Sample element with data-job-id:", jobIdElements[0]);
-    console.log("Its classes:", jobIdElements[0].className);
+    debug.log("Sample element with data-job-id:", jobIdElements[0]);
+    debug.log("Its classes:", jobIdElements[0].className);
   }
 
   if (occludableElements.length > 0) {
-    console.log(
+    debug.log(
       "Sample element with data-occludable-job-id:",
       occludableElements[0]
     );
-    console.log("Its classes:", occludableElements[0].className);
+    debug.log("Its classes:", occludableElements[0].className);
   }
 
   // Look for the jobs list container
@@ -52,11 +52,11 @@ function diagnosticScan() {
   possibleContainers.forEach((selector) => {
     const container = document.querySelector(selector);
     if (container) {
-      console.log(`✅ Found container: ${selector}`);
-      console.log("Container's children count:", container.children.length);
+      debug.log(`✅ Found container: ${selector}`);
+      debug.log("Container's children count:", container.children.length);
       if (container.children.length > 0) {
-        console.log("First child:", container.children[0]);
-        console.log("First child classes:", container.children[0].className);
+        debug.log("First child:", container.children[0]);
+        debug.log("First child classes:", container.children[0].className);
       }
     }
   });
@@ -77,20 +77,20 @@ chrome.storage.sync.get(["filterSettings"], function (result) {
   if (result.filterSettings) {
     filterSettings = result.filterSettings;
   }
-  console.log("Filter settings loaded:", filterSettings);
+  debug.log("Filter settings loaded:", filterSettings);
   // Don't apply filters immediately - let waitForJobsToLoad() handle it
 });
 
 // Listen for settings changes from popup
 chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
-  console.log("📩 Message received:", request);
+  debug.log("📩 Message received:", request);
 
   try {
     if (request.action === "updateSettings") {
       const oldSettings = { ...filterSettings };
       filterSettings = request.settings;
 
-      console.log(
+      debug.log(
         "🔄 Settings updated from:",
         oldSettings,
         "to:",
@@ -99,24 +99,24 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
 
       // Log which settings changed
       if (oldSettings.hideApplied !== filterSettings.hideApplied) {
-        console.log(
+        debug.log(
           `🔄 Hide Applied Jobs: ${filterSettings.hideApplied ? "ON" : "OFF"}`
         );
       }
       if (oldSettings.hidePromoted !== filterSettings.hidePromoted) {
-        console.log(
+        debug.log(
           `🔄 Hide Promoted Jobs: ${filterSettings.hidePromoted ? "ON" : "OFF"}`
         );
       }
       if (oldSettings.hideReposted !== filterSettings.hideReposted) {
-        console.log(
+        debug.log(
           `🔄 Hide Reposted Jobs: ${filterSettings.hideReposted ? "ON" : "OFF"}`
         );
       }
 
       // Clear the processed jobs WeakSet to allow reprocessing
       processedJobs = new WeakSet();
-      console.log("🗑️ Cleared processed jobs WeakSet");
+      debug.log("🗑️ Cleared processed jobs WeakSet");
 
       // Get all job cards
       const allJobCards = document.querySelectorAll(`
@@ -130,7 +130,7 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
         div.job-card-container
       `);
 
-      console.log(`📋 Found ${allJobCards.length} job cards to reprocess`);
+      debug.log(`📋 Found ${allJobCards.length} job cards to reprocess`);
 
       // Reset all job cards completely
       let resetCount = 0;
@@ -141,7 +141,7 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
         resetCount++;
       });
 
-      console.log(`🔄 Reset ${resetCount} job cards`);
+      debug.log(`🔄 Reset ${resetCount} job cards`);
 
       // Reprocess all job cards
       let hiddenCount = 0;
@@ -158,14 +158,14 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
         }
       });
 
-      console.log(
+      debug.log(
         `✅ Re-filtering complete: ${hiddenCount} hidden, ${visibleCount} visible`
       );
 
       sendResponse({ success: true });
     }
   } catch (error) {
-    console.error("❌ Error handling message:", error);
+    debug.error("❌ Error handling message:", error);
     sendResponse({ success: false, error: error.message });
   }
 
@@ -304,19 +304,19 @@ function applyFilters() {
           }
         });
       } catch (error) {
-        console.log(`Error with selector ${selector}:`, error);
+        debug.log(`Error with selector ${selector}:`, error);
       }
     });
 
-    console.log(
+    debug.log(
       `Found ${allJobCards.length} job cards using multiple selectors`
     );
 
     if (allJobCards.length === 0) {
-      console.warn(
+      debug.warn(
         "⚠️ No job cards found. The page might still be loading or LinkedIn's structure changed."
       );
-      console.log(
+      debug.log(
         "Tip: Make sure you're on https://www.linkedin.com/jobs/search/ with actual job listings visible"
       );
       return;
@@ -335,7 +335,7 @@ function applyFilters() {
     // Also check job details for reposted status
     checkJobDetailsForReposted();
   } catch (error) {
-    console.error("Error in applyFilters:", error);
+    debug.error("Error in applyFilters:", error);
   }
 }
 
@@ -431,7 +431,7 @@ setInterval(() => {
   if (unprocessedJobs.length > 0) {
     // Only log if it's a significant number (avoids spam)
     if (unprocessedJobs.length > 5) {
-      console.log(
+      debug.log(
         `Found ${unprocessedJobs.length} unprocessed jobs, filtering...`
       );
     }
@@ -439,7 +439,7 @@ setInterval(() => {
   }
 }, 2000); // Check every 2 seconds (reduced frequency)
 
-console.log("LinkedIn Job Filter Extension activated! ✨");
+debug.log("LinkedIn Job Filter Extension activated! ✨");
 
 // Function to wait for jobs to load (skeleton replacements)
 function waitForJobsToLoad() {
@@ -459,20 +459,20 @@ function waitForJobsToLoad() {
       document.querySelectorAll('[class*="job-card"]').length > 0;
 
     if ((hasJobIds || hasJobCards) && !skeleton) {
-      console.log("✅ Jobs loaded! Starting filter...");
+      debug.log("✅ Jobs loaded! Starting filter...");
       clearInterval(checkInterval);
       applyFilters();
       return;
     }
 
     if (attempts >= maxAttempts) {
-      console.log(
+      debug.log(
         "⚠️ Timeout waiting for jobs to load. Trying to filter anyway..."
       );
       clearInterval(checkInterval);
       applyFilters();
     } else {
-      console.log(
+      debug.log(
         `⏳ Waiting for jobs to load... (attempt ${attempts}/${maxAttempts})`
       );
     }
@@ -481,10 +481,10 @@ function waitForJobsToLoad() {
 
 // Start waiting for jobs to load (only if on jobs page)
 if (isOnJobsPage()) {
-  console.log("📍 On jobs page, starting filter initialization...");
+  debug.log("📍 On jobs page, starting filter initialization...");
   waitForJobsToLoad();
 } else {
-  console.log("📍 Not on jobs page yet, waiting for navigation...");
+  debug.log("📍 Not on jobs page yet, waiting for navigation...");
 }
 
 // Detect URL changes (for when user navigates from feed to jobs without refresh)
@@ -496,7 +496,7 @@ new MutationObserver(() => {
 
     // Check if navigated to jobs page
     if (currentUrl.includes("/jobs")) {
-      console.log("🔄 Navigated to jobs page, re-initializing filters...");
+      debug.log("🔄 Navigated to jobs page, re-initializing filters...");
 
       // Wait a moment for the page to render, then apply filters
       setTimeout(() => {
@@ -506,7 +506,7 @@ new MutationObserver(() => {
   }
 }).observe(document, { subtree: true, childList: true });
 
-console.log(
+debug.log(
   "🔍 URL change detection active - extension will auto-activate on jobs page"
 );
 

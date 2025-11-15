@@ -20,7 +20,7 @@
             "matches": [
                 "https://www.linkedin.com/*"
             ],
-            "js": ["Content.js"],
+            "js": ["debug.js", "Content.js"],
             "run_at": "document_end"
         }
     ],
