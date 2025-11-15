@@ -1,6 +1,36 @@
 // LinkedIn Job Filter Extension
 debug.log("LinkedIn Job Filter Extension loaded! 🎯");
 
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Throttle / backoff configuration to avoid 429s
+const SCAN_DELAY_BASE_MS = 1400;          // base delay between card clicks
+const SCAN_DELAY_JITTER_MS = 800;         // additional random delay
+const SCAN_BATCH_SIZE = 15;                // cards per batch
+const SCAN_BATCH_COOLDOWN_MS = 5000;     // cooldown between batches
+let consecutiveDetailMisses = 0;
+
+function humanDelayMs() {
+  return SCAN_DELAY_BASE_MS + Math.random() * SCAN_DELAY_JITTER_MS;
+}
+
+async function pauseIfHidden() {
+  while (document.visibilityState === "hidden") {
+    await wait(1000);
+  }
+}
+
+function resetMissCounter() { consecutiveDetailMisses = 0; }
+
+async function maybeBackoff() {
+  if (consecutiveDetailMisses >= 3) {
+    const backoff = Math.min(60000, 5000 * consecutiveDetailMisses);
+    debug.log(`⛔ Suspected throttling, backing off for ${backoff}ms`);
+    await wait(backoff);
+    consecutiveDetailMisses = 0;
+  }
+}
+
 // Check if we're on a jobs page
 function isOnJobsPage() {
   return location.href.includes("/jobs");
@@ -162,6 +192,14 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
         `✅ Re-filtering complete: ${hiddenCount} hidden, ${visibleCount} visible`
       );
 
+      // If reposted filter was turned on, scan for reposted jobs
+      if (filterSettings.hideReposted && !oldSettings.hideReposted) {
+        debug.log("🔍 Reposted filter enabled, starting scan...");
+        setTimeout(() => {
+          scanAllJobsForReposted();
+        }, 500);
+      }
+
       sendResponse({ success: true });
     }
   } catch (error) {
@@ -247,6 +285,263 @@ function checkJobDetailsForReposted() {
         }
       }
     }
+  }
+}
+
+// Function to programmatically check all jobs for reposted status
+// This is necessary because "Reposted" text only appears in the job details panel
+// (right side) when you click a job card, not in the job list cards themselves.
+// Solution: Automatically click through all visible job cards to check their details.
+let isScanning = false; // Flag to prevent concurrent scans
+
+const normalizeText = (text) =>
+  text ? text.replace(/\s+/g, " ").trim().toLowerCase() : "";
+
+function getJobTitleFromCard(jobCard) {
+  if (!jobCard) {
+    return "";
+  }
+
+  const selectors = [
+    ".job-card-list__title",
+    ".job-card-container__title",
+    ".job-card-container__link",
+    ".job-card-list__title a",
+    "a.job-card-list__title",
+  ];
+
+  for (const selector of selectors) {
+    const element = jobCard.querySelector(selector);
+    if (element && element.textContent) {
+      return element.textContent;
+    }
+  }
+
+  return jobCard.textContent || "";
+}
+
+async function waitForJobDetailsMatch(jobCard) {
+  const targetTitle = normalizeText(getJobTitleFromCard(jobCard));
+  const detailSelectors = [
+    ".job-details-jobs-unified-top-card__job-title h1",
+    ".job-details-jobs-unified-top-card__job-title a",
+    ".job-details-jobs-unified-top-card__job-title",
+    ".jobs-unified-top-card__job-title h1",
+  ];
+
+  for (let attempt = 0; attempt < 10; attempt++) {
+    await wait(200);
+
+    let titleElement = null;
+    for (const selector of detailSelectors) {
+      const candidate = document.querySelector(selector);
+      if (candidate && candidate.textContent) {
+        titleElement = candidate;
+        break;
+      }
+    }
+
+    if (!titleElement) {
+      continue;
+    }
+
+    const detailTitle = normalizeText(titleElement.textContent);
+    if (
+      !targetTitle ||
+      detailTitle.includes(targetTitle) ||
+      targetTitle.includes(detailTitle)
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function processJobCards(jobCards, attempt, maxAttempts) {
+  let repostedCount = 0;
+  const skippedCards = [];
+  let processedInBatch = 0;
+
+  for (let i = 0; i < jobCards.length; i++) {
+    const jobCard = jobCards[i];
+
+    if (!jobCard || !document.contains(jobCard)) {
+      continue;
+    }
+
+    if (jobCard.getAttribute("data-reposted") === "true") {
+      continue;
+    }
+
+    const cardIndex = jobCard.dataset.scanIndex || i;
+    const jobTitleForLog = (getJobTitleFromCard(jobCard) || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 80);
+
+    try {
+      jobCard.scrollIntoView({ block: "center", behavior: "auto" });
+
+      const clickableElement =
+        jobCard.querySelector("a[href*='/jobs/view']") || jobCard;
+
+      // Use a single click only (remove synthetic MouseEvent to avoid double requests)
+      if (typeof clickableElement.click === "function") {
+        clickableElement.click();
+      } else if (typeof jobCard.click === "function") {
+        jobCard.click();
+      }
+
+      const detailsReady = await waitForJobDetailsMatch(jobCard);
+
+      if (!detailsReady) {
+        consecutiveDetailMisses++;
+        await maybeBackoff();
+        debug.warn(
+          `⚠️ Job details did not update for card index ${cardIndex} (${jobTitleForLog || "unknown title"}), attempt ${attempt}/${maxAttempts}, scheduling retry`
+        );
+        skippedCards.push(jobCard);
+        // short breather before next iteration
+        await pauseIfHidden();
+        await wait(300 + Math.random() * 300);
+        continue;
+      } else {
+        resetMissCounter();
+      }
+
+      const jobDetails = document.querySelector(
+        ".job-details-jobs-unified-top-card__primary-description-container"
+      );
+
+      if (jobDetails && jobDetails.textContent.includes("Reposted")) {
+        debug.log(
+          `✓ Found reposted job: ${jobTitleForLog || "[no title]"}`
+        );
+
+        jobCard.setAttribute("data-reposted", "true");
+        jobCard.style.setProperty("display", "none", "important");
+        jobCard.setAttribute("data-hidden-by-filter", "true");
+        repostedCount++;
+      }
+    } catch (error) {
+      debug.error(`Error scanning job card ${cardIndex}:`, error);
+    }
+
+    // Throttling + batching to avoid 429s
+    processedInBatch++;
+    await pauseIfHidden();
+    await wait(humanDelayMs());
+
+    if (processedInBatch % SCAN_BATCH_SIZE === 0 && i < jobCards.length - 1) {
+      debug.log(`🛑 Cooling down for ${SCAN_BATCH_COOLDOWN_MS}ms after ${SCAN_BATCH_SIZE} cards`);
+      await wait(SCAN_BATCH_COOLDOWN_MS);
+    }
+  }
+
+  return { repostedCount, skippedCards };
+}
+
+async function scanAllJobsForReposted() {
+  if (!filterSettings.hideReposted) {
+    debug.log("⏭️ Reposted filter disabled, skipping scan");
+    return;
+  }
+
+  if (isScanning) {
+    debug.log("⏸️ Scan already in progress, skipping...");
+    return;
+  }
+
+  isScanning = true;
+  debug.log("🔍 Starting scan for reposted jobs...");
+
+  let totalReposted = 0;
+  let skippedCards = [];
+  const maxAttempts = 2;
+
+  try {
+    const selectors = [
+      ".job-card-container",
+      ".jobs-search-results__list-item",
+      ".scaffold-layout__list-item",
+      "li[data-occludable-job-id]",
+      ".jobs-search-results-list__list-item",
+      "[data-job-id]",
+      ".job-card-list__entity-lockup",
+      "div.job-card-container",
+    ];
+
+    let allJobCards = [];
+    selectors.forEach((selector) => {
+      try {
+        const cards = document.querySelectorAll(selector);
+        cards.forEach((card) => {
+          if (
+            !allJobCards.includes(card) &&
+            !card.classList.contains(
+              "jobs-list-skeleton__artdeco-card--no-top-right-radius"
+            )
+          ) {
+            allJobCards.push(card);
+          }
+        });
+      } catch (error) {
+        debug.log(`Error with selector ${selector}:`, error);
+      }
+    });
+
+    const visibleCards = allJobCards.filter(
+      (card) => card.style.display !== "none"
+    );
+
+    debug.log(`📋 Found ${visibleCards.length} job cards to scan`);
+
+    visibleCards.forEach((card, index) => {
+      card.dataset.scanIndex = index.toString();
+    });
+
+    let attempt = 1;
+    let cardsToProcess = visibleCards;
+
+    while (cardsToProcess.length > 0 && attempt <= maxAttempts) {
+      if (attempt > 1) {
+        debug.log(
+          `🔁 Retrying ${cardsToProcess.length} job cards (attempt ${attempt}/${maxAttempts})`
+        );
+      }
+
+      const { repostedCount, skippedCards: newlySkipped } =
+        await processJobCards(cardsToProcess, attempt, maxAttempts);
+
+      totalReposted += repostedCount;
+
+      skippedCards = newlySkipped.filter(
+        (card) => card && document.contains(card) && card.style.display !== "none"
+      );
+
+      if (skippedCards.length === 0) {
+        break;
+      }
+
+      attempt++;
+
+      if (attempt > maxAttempts) {
+        break;
+      }
+
+      await wait(1500);
+      cardsToProcess = skippedCards;
+    }
+  } finally {
+    if (skippedCards.length > 0) {
+      debug.warn(
+        `⚠️ Could not verify ${skippedCards.length} job cards after ${maxAttempts} attempts`
+      );
+    }
+
+    debug.log(`✅ Scan complete! Found and hid ${totalReposted} reposted jobs`);
+    isScanning = false;
   }
 }
 
@@ -462,6 +757,12 @@ function waitForJobsToLoad() {
       debug.log("✅ Jobs loaded! Starting filter...");
       clearInterval(checkInterval);
       applyFilters();
+      
+      // Scan for reposted jobs after initial filter (slightly longer delay)
+      setTimeout(() => {
+        scanAllJobsForReposted();
+      }, 3000);
+      
       return;
     }
 
@@ -471,6 +772,11 @@ function waitForJobsToLoad() {
       );
       clearInterval(checkInterval);
       applyFilters();
+      
+      // Also scan for reposted on timeout (increased delay)
+      setTimeout(() => {
+        scanAllJobsForReposted();
+      }, 3000);
     } else {
       debug.log(
         `⏳ Waiting for jobs to load... (attempt ${attempts}/${maxAttempts})`
@@ -488,23 +794,67 @@ if (isOnJobsPage()) {
 }
 
 // Detect URL changes (for when user navigates from feed to jobs without refresh)
-let lastUrl = location.href;
-new MutationObserver(() => {
-  const currentUrl = location.href;
-  if (currentUrl !== lastUrl) {
-    lastUrl = currentUrl;
+// Using setInterval instead of MutationObserver to avoid constant triggering
+function getNavigationSignature() {
+  try {
+    const currentUrl = new URL(location.href);
+    const params = new URLSearchParams(currentUrl.search);
 
-    // Check if navigated to jobs page
-    if (currentUrl.includes("/jobs")) {
-      debug.log("🔄 Navigated to jobs page, re-initializing filters...");
+    // Remove transient params that change when simply selecting a job card
+    [
+      "currentJobId",
+      "currentJobUrl",
+      "currentJobUrlEncoded",
+      "trackingId",
+      "refId",
+    ].forEach((key) => params.delete(key));
 
-      // Wait a moment for the page to render, then apply filters
-      setTimeout(() => {
-        waitForJobsToLoad();
-      }, 1000);
+    if (typeof params.sort === "function") {
+      params.sort();
     }
+
+    const query = params.toString();
+    return query ? `${currentUrl.pathname}?${query}` : currentUrl.pathname;
+  } catch (error) {
+    debug.warn("⚠️ Failed to build navigation signature, falling back to pathname", error);
+    return location.pathname;
   }
-}).observe(document, { subtree: true, childList: true });
+}
+
+let lastNavigationSignature = getNavigationSignature();
+let urlChangeTimeout = null;
+
+setInterval(() => {
+  const navigationSignature = getNavigationSignature();
+
+  if (navigationSignature === lastNavigationSignature) {
+    return;
+  }
+
+  if (isScanning) {
+    debug.log("⏳ Ignoring URL change during active scan");
+    lastNavigationSignature = navigationSignature;
+    return;
+  }
+
+  lastNavigationSignature = navigationSignature;
+
+  if (!location.pathname.includes("/jobs")) {
+    return;
+  }
+
+  debug.log("🔄 Navigated to jobs page (signature change), re-initializing filters...");
+
+  processedJobs = new WeakSet();
+
+  if (urlChangeTimeout) {
+    clearTimeout(urlChangeTimeout);
+  }
+
+  urlChangeTimeout = setTimeout(() => {
+    waitForJobsToLoad();
+  }, 2000);
+}, 1000); // Check URL every second instead of on every DOM mutation
 
 debug.log(
   "🔍 URL change detection active - extension will auto-activate on jobs page"

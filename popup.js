@@ -1,3 +1,12 @@
+// Ensure debug is available (fallback if debug.js fails to load)
+if (typeof window.debug === 'undefined') {
+  window.debug = {
+    log: console.log.bind(console),
+    error: console.error.bind(console),
+    warn: console.warn.bind(console)
+  };
+}
+
 // Load saved settings when popup opens
 document.addEventListener("DOMContentLoaded", function () {
   // Load settings from storage

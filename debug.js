@@ -1,6 +1,6 @@
 // debug.js - Centralized debug logging
 // Set DEBUG to false before production/publishing to disable all console output
-const DEBUG = false;
+const DEBUG = true;
 
 // Create global debug object for use in other scripts
 window.debug = {
