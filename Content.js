@@ -108,8 +108,214 @@ chrome.storage.sync.get(["filterSettings"], function (result) {
     filterSettings = result.filterSettings;
   }
   debug.log("Filter settings loaded:", filterSettings);
-  // Don't apply filters immediately - let waitForJobsToLoad() handle it
 });
+
+// Listen to storage changes to update filterSettings in real-time
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName === 'sync' && changes.filterSettings) {
+    const oldSettings = { ...filterSettings };
+    filterSettings = changes.filterSettings.newValue;
+    debug.log("🔄 Storage changed - filter settings updated:", filterSettings);
+    
+    // If reposted filter was turned OFF during scan, it will be caught in the next iteration
+    if (oldSettings.hideReposted && !filterSettings.hideReposted) {
+      debug.log("⚠️ Reposted filter turned OFF via storage change");
+    }
+    
+    // If reposted filter was turned ON, trigger scan
+    if (!oldSettings.hideReposted && filterSettings.hideReposted) {
+      debug.log("🔍 Reposted filter turned ON via storage change, starting scan...");
+      setTimeout(() => {
+        scanAllJobsForReposted();
+      }, 500);
+    }
+  }
+});
+
+// Function to extract job ID from card element
+function getJobIdFromCard(card) {
+  if (!card) return null;
+  const id =
+    card.getAttribute?.("data-occludable-job-id") ||
+    card.getAttribute?.("data-job-id");
+  if (id) return id;
+
+  const link =
+    card.querySelector?.("a[href*='/jobs/view']") ||
+    card.closest?.("a[href*='/jobs/view']");
+  const href = link?.getAttribute?.("href") || "";
+  const m1 = href.match(/\/jobs\/view\/(\d+)/);
+  if (m1) return m1[1];
+  const m2 = href.match(/currentJobId=(\d+)/);
+  if (m2) return m2[1];
+  return null;
+}
+
+function isScannableElement(el) {
+  if (!el || !document.contains(el)) return false;
+  if (el.closest?.(".jobs-list-skeleton__artdeco-card--no-top-right-radius")) return false;
+  if (el.hasAttribute?.("hidden")) return false;
+  const cs = getComputedStyle(el);
+  if (cs.display === "none" || cs.visibility === "hidden" || parseFloat(cs.opacity) === 0) {
+    return false;
+  }
+  return true;
+}
+
+function collectCanonicalJobCards() {
+  const selectors = [
+    ".job-card-container",
+    ".jobs-search-results__list-item",
+    ".scaffold-layout__list-item",
+    "li[data-occludable-job-id]",
+    ".jobs-search-results-list__list-item",
+    "[data-job-id]",
+    ".job-card-list__entity-lockup",
+    "div.job-card-container",
+  ];
+
+  const seenNodes = new Set();
+  const byId = new Map();
+  const dupes = new Map();
+
+  selectors.forEach((selector) => {
+    try {
+      document.querySelectorAll(selector).forEach((node) => {
+        if (seenNodes.has(node)) return;
+        seenNodes.add(node);
+
+        const jobId = getJobIdFromCard(node);
+        if (!jobId) return;
+
+        const canonical = node.closest?.("li[data-occludable-job-id]") || node;
+
+        if (!byId.has(jobId)) {
+          byId.set(jobId, canonical);
+          dupes.set(jobId, [canonical]);
+        } else {
+          const arr = dupes.get(jobId);
+          const currentCanonical = byId.get(jobId);
+          const preferred =
+            canonical.matches?.("li[data-occludable-job-id]") ? canonical : currentCanonical;
+          byId.set(jobId, preferred);
+          if (!arr.includes(canonical)) arr.push(canonical);
+        }
+      });
+    } catch (e) {
+      debug.log(`Error with selector ${selector}:`, e);
+    }
+  });
+
+  return { byId, dupes };
+}
+
+// Overlay elements for scan progress
+let overlayEl = null;
+
+function ensureScanOverlay() {
+  if (overlayEl) return overlayEl;
+
+  overlayEl = document.createElement("div");
+  overlayEl.id = "ljf-scan-overlay";
+  overlayEl.setAttribute("role", "dialog");
+  overlayEl.setAttribute("aria-live", "polite");
+  overlayEl.style.cssText = [
+    "position:fixed",
+    "inset:0",
+    "background:rgba(0,0,0,0.45)",
+    "display:none",
+    "align-items:center",
+    "justify-content:center",
+    "z-index:2147483647",
+    "opacity:0",
+    "transition:opacity 180ms ease-in-out"
+  ].join(";");
+
+  const panel = document.createElement("div");
+  panel.style.cssText = [
+    "min-width:320px",
+    "max-width:90vw",
+    "padding:20px 24px",
+    "border-radius:12px",
+    "background:#1f1f1f",
+    "color:#fff",
+    "box-shadow:0 10px 30px rgba(0,0,0,0.5)",
+    "font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif"
+  ].join(";");
+
+  const title = document.createElement("div");
+  title.id = "ljf-scan-title";
+  title.textContent = "Scanning for reposted jobs…";
+  title.style.cssText = "font-size:16px;font-weight:600;margin-bottom:10px";
+
+  const row = document.createElement("div");
+  row.style.cssText = "display:flex;align-items:center;gap:12px";
+
+  const spinner = document.createElement("div");
+  spinner.setAttribute("aria-hidden", "true");
+  spinner.style.cssText = [
+    "width:18px",
+    "height:18px",
+    "border:2px solid rgba(255,255,255,0.25)",
+    "border-top-color:#fff",
+    "border-radius:50%",
+    "animation:ljf-spin 700ms linear infinite"
+  ].join(";");
+
+  const progress = document.createElement("div");
+  progress.id = "ljf-scan-progress";
+  progress.textContent = "0 / 0 • found 0";
+  progress.style.cssText = "font-size:13px;opacity:0.85";
+
+  const style = document.createElement("style");
+  style.textContent = "@keyframes ljf-spin{to{transform:rotate(360deg)}}";
+
+  row.appendChild(spinner);
+  row.appendChild(progress);
+  panel.appendChild(title);
+  panel.appendChild(row);
+  overlayEl.appendChild(style);
+  overlayEl.appendChild(panel);
+  document.documentElement.appendChild(overlayEl);
+  return overlayEl;
+}
+
+function showScanOverlay(progressState) {
+  const el = ensureScanOverlay();
+  const title = el.querySelector("#ljf-scan-title");
+  const progress = el.querySelector("#ljf-scan-progress");
+  if (title) title.textContent = "Scanning for reposted jobs…";
+  if (progress) {
+    const total = progressState?.total ?? 0;
+    const processed = progressState?.processed ?? 0;
+    const found = progressState?.found ?? 0;
+    progress.textContent = `${processed} / ${total} • found ${found}`;
+  }
+  el.style.display = "flex";
+  requestAnimationFrame(() => (el.style.opacity = "1"));
+}
+
+function updateScanOverlay(progressState) {
+  if (!overlayEl) return;
+  const progress = overlayEl.querySelector("#ljf-scan-progress");
+  if (!progress) return;
+  const total = progressState?.total ?? 0;
+  const processed = progressState?.processed ?? 0;
+  const found = progressState?.found ?? 0;
+  progress.textContent = `${processed} / ${total} • found ${found}`;
+}
+
+function hideScanOverlay(finalText) {
+  if (!overlayEl) return;
+  const title = overlayEl.querySelector("#ljf-scan-title");
+  if (title && finalText) title.textContent = finalText;
+  setTimeout(() => {
+    overlayEl.style.opacity = "0";
+    setTimeout(() => {
+      if (overlayEl) overlayEl.style.display = "none";
+    }, 200);
+  }, 600);
+}
 
 // Listen for settings changes from popup
 chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
@@ -120,67 +326,47 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
       const oldSettings = { ...filterSettings };
       filterSettings = request.settings;
 
-      debug.log(
-        "🔄 Settings updated from:",
-        oldSettings,
-        "to:",
-        filterSettings
-      );
+      debug.log("🔄 Settings updated from:", oldSettings, "to:", filterSettings);
 
-      // Log which settings changed
       if (oldSettings.hideApplied !== filterSettings.hideApplied) {
-        debug.log(
-          `🔄 Hide Applied Jobs: ${filterSettings.hideApplied ? "ON" : "OFF"}`
-        );
+        debug.log(`🔄 Hide Applied Jobs: ${filterSettings.hideApplied ? "ON" : "OFF"}`);
       }
       if (oldSettings.hidePromoted !== filterSettings.hidePromoted) {
-        debug.log(
-          `🔄 Hide Promoted Jobs: ${filterSettings.hidePromoted ? "ON" : "OFF"}`
-        );
+        debug.log(`🔄 Hide Promoted Jobs: ${filterSettings.hidePromoted ? "ON" : "OFF"}`);
       }
       if (oldSettings.hideReposted !== filterSettings.hideReposted) {
-        debug.log(
-          `🔄 Hide Reposted Jobs: ${filterSettings.hideReposted ? "ON" : "OFF"}`
-        );
+        debug.log(`🔄 Hide Reposted Jobs: ${filterSettings.hideReposted ? "ON" : "OFF"}`);
       }
 
-      // Clear the processed jobs WeakSet to allow reprocessing
       processedJobs = new WeakSet();
       debug.log("🗑️ Cleared processed jobs WeakSet");
 
-      // Get all job cards
-      const allJobCards = document.querySelectorAll(`
-        .job-card-container,
-        .jobs-search-results__list-item,
-        .scaffold-layout__list-item,
-        li[data-occludable-job-id],
-        .jobs-search-results-list__list-item,
-        [data-job-id],
-        .job-card-list__entity-lockup,
-        div.job-card-container
-      `);
+      // Use canonical deduplication to get accurate count
+      const { byId, dupes } = collectCanonicalJobCards();
+      const allJobCards = Array.from(byId.values());
 
-      debug.log(`📋 Found ${allJobCards.length} job cards to reprocess`);
+      debug.log(`📋 Found ${allJobCards.length} unique job cards to reprocess`);
 
-      // Reset all job cards completely
       let resetCount = 0;
-      allJobCards.forEach((card) => {
-        card.removeAttribute("data-filtered");
-        card.removeAttribute("data-hidden-by-filter");
-        card.style.removeProperty("display");
-        resetCount++;
+      // Reset canonical cards AND all duplicates
+      dupes.forEach((dupArray) => {
+        dupArray.forEach((card) => {
+          card.removeAttribute("data-filtered");
+          card.removeAttribute("data-hidden-by-filter");
+          card.removeAttribute("data-reposted");
+          card.style.removeProperty("display");
+          resetCount++;
+        });
       });
 
-      debug.log(`🔄 Reset ${resetCount} job cards`);
+      debug.log(`🔄 Reset ${resetCount} total DOM nodes (${allJobCards.length} unique jobs)`);
 
-      // Reprocess all job cards
       let hiddenCount = 0;
       let visibleCount = 0;
 
       allJobCards.forEach((card) => {
         const wasShouldHide = shouldHideJob(card);
         filterJobCard(card);
-
         if (wasShouldHide) {
           hiddenCount++;
         } else {
@@ -188,11 +374,9 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
         }
       });
 
-      debug.log(
-        `✅ Re-filtering complete: ${hiddenCount} hidden, ${visibleCount} visible`
-      );
+      debug.log(`✅ Re-filtering complete: ${hiddenCount} hidden, ${visibleCount} visible`);
 
-      // If reposted filter was turned on, scan for reposted jobs
+      // If reposted filter was turned ON (from OFF), start scan
       if (filterSettings.hideReposted && !oldSettings.hideReposted) {
         debug.log("🔍 Reposted filter enabled, starting scan...");
         setTimeout(() => {
@@ -358,21 +542,26 @@ async function waitForJobDetailsMatch(jobCard) {
   return false;
 }
 
-async function processJobCards(jobCards, attempt, maxAttempts) {
+async function processJobCards(jobCards, attempt, maxAttempts, progressState, processedIds, duplicatesById) {
   let repostedCount = 0;
   const skippedCards = [];
   let processedInBatch = 0;
 
   for (let i = 0; i < jobCards.length; i++) {
+    // Check if filter was turned off mid-scan with detailed logging
+    debug.log(`[Scan Check ${i}] hideReposted = ${filterSettings.hideReposted}`);
+    if (!filterSettings.hideReposted) {
+      debug.log("⏸️ Reposted filter turned off, stopping scan");
+      return { repostedCount, skippedCards: [], cancelled: true };
+    }
+
     const jobCard = jobCards[i];
+    if (!jobCard || !document.contains(jobCard)) continue;
 
-    if (!jobCard || !document.contains(jobCard)) {
-      continue;
-    }
+    const jobId = getJobIdFromCard(jobCard);
+    if (!jobId) continue;
 
-    if (jobCard.getAttribute("data-reposted") === "true") {
-      continue;
-    }
+    if (jobCard.getAttribute("data-reposted") === "true") continue;
 
     const cardIndex = jobCard.dataset.scanIndex || i;
     const jobTitleForLog = (getJobTitleFromCard(jobCard) || "")
@@ -380,13 +569,19 @@ async function processJobCards(jobCards, attempt, maxAttempts) {
       .trim()
       .slice(0, 80);
 
+    // Count unique jobId for progress (only once overall)
+    if (progressState && processedIds && !processedIds.has(jobId)) {
+      processedIds.add(jobId);
+      progressState.processed = (progressState.processed || 0) + 1;
+      updateScanOverlay(progressState);
+    }
+
     try {
       jobCard.scrollIntoView({ block: "center", behavior: "auto" });
 
       const clickableElement =
         jobCard.querySelector("a[href*='/jobs/view']") || jobCard;
 
-      // Use a single click only (remove synthetic MouseEvent to avoid double requests)
       if (typeof clickableElement.click === "function") {
         clickableElement.click();
       } else if (typeof jobCard.click === "function") {
@@ -402,7 +597,6 @@ async function processJobCards(jobCards, attempt, maxAttempts) {
           `⚠️ Job details did not update for card index ${cardIndex} (${jobTitleForLog || "unknown title"}), attempt ${attempt}/${maxAttempts}, scheduling retry`
         );
         skippedCards.push(jobCard);
-        // short breather before next iteration
         await pauseIfHidden();
         await wait(300 + Math.random() * 300);
         continue;
@@ -415,20 +609,23 @@ async function processJobCards(jobCards, attempt, maxAttempts) {
       );
 
       if (jobDetails && jobDetails.textContent.includes("Reposted")) {
-        debug.log(
-          `✓ Found reposted job: ${jobTitleForLog || "[no title]"}`
-        );
+        debug.log(`✓ Found reposted job: ${jobTitleForLog || "[no title]"}`);
 
-        jobCard.setAttribute("data-reposted", "true");
-        jobCard.style.setProperty("display", "none", "important");
-        jobCard.setAttribute("data-hidden-by-filter", "true");
+        // Mark and hide all duplicates for this job id
+        const allForId = (duplicatesById?.get(jobId) || [jobCard]);
+        allForId.forEach((el) => {
+          el.setAttribute("data-reposted", "true");
+          el.style.setProperty("display", "none", "important");
+          el.setAttribute("data-hidden-by-filter", "true");
+        });
+
         repostedCount++;
+        if (progressState) progressState.found = (progressState.found || 0) + 1;
       }
     } catch (error) {
       debug.error(`Error scanning job card ${cardIndex}:`, error);
     }
 
-    // Throttling + batching to avoid 429s
     processedInBatch++;
     await pauseIfHidden();
     await wait(humanDelayMs());
@@ -436,6 +633,13 @@ async function processJobCards(jobCards, attempt, maxAttempts) {
     if (processedInBatch % SCAN_BATCH_SIZE === 0 && i < jobCards.length - 1) {
       debug.log(`🛑 Cooling down for ${SCAN_BATCH_COOLDOWN_MS}ms after ${SCAN_BATCH_SIZE} cards`);
       await wait(SCAN_BATCH_COOLDOWN_MS);
+      
+      // Re-check filter after cooldown with logging
+      debug.log(`[Post-Cooldown Check] hideReposted = ${filterSettings.hideReposted}`);
+      if (!filterSettings.hideReposted) {
+        debug.log("⏸️ Reposted filter turned off during cooldown, stopping scan");
+        return { repostedCount, skippedCards: [], cancelled: true };
+      }
     }
   }
 
@@ -447,7 +651,6 @@ async function scanAllJobsForReposted() {
     debug.log("⏭️ Reposted filter disabled, skipping scan");
     return;
   }
-
   if (isScanning) {
     debug.log("⏸️ Scan already in progress, skipping...");
     return;
@@ -459,88 +662,77 @@ async function scanAllJobsForReposted() {
   let totalReposted = 0;
   let skippedCards = [];
   const maxAttempts = 2;
+  let cancelled = false;
+
+  const progress = { total: 0, processed: 0, found: 0 };
+  const processedIds = new Set();
 
   try {
-    const selectors = [
-      ".job-card-container",
-      ".jobs-search-results__list-item",
-      ".scaffold-layout__list-item",
-      "li[data-occludable-job-id]",
-      ".jobs-search-results-list__list-item",
-      "[data-job-id]",
-      ".job-card-list__entity-lockup",
-      "div.job-card-container",
-    ];
+    const { byId, dupes } = collectCanonicalJobCards();
 
-    let allJobCards = [];
-    selectors.forEach((selector) => {
-      try {
-        const cards = document.querySelectorAll(selector);
-        cards.forEach((card) => {
-          if (
-            !allJobCards.includes(card) &&
-            !card.classList.contains(
-              "jobs-list-skeleton__artdeco-card--no-top-right-radius"
-            )
-          ) {
-            allJobCards.push(card);
-          }
-        });
-      } catch (error) {
-        debug.log(`Error with selector ${selector}:`, error);
-      }
+    const visibleEntries = Array.from(byId.entries()).filter(([, el]) => {
+      if (el.getAttribute("data-hidden-by-filter") === "true") return false;
+      return isScannableElement(el);
     });
 
-    const visibleCards = allJobCards.filter(
-      (card) => card.style.display !== "none"
-    );
-
-    debug.log(`📋 Found ${visibleCards.length} job cards to scan`);
-
-    visibleCards.forEach((card, index) => {
-      card.dataset.scanIndex = index.toString();
+    const visibleCards = visibleEntries.map(([, el], index) => {
+      el.dataset.scanIndex = String(index);
+      return el;
     });
+
+    progress.total = visibleCards.length;
+    debug.log(`📋 Found ${visibleCards.length} unique job cards to scan`);
+    showScanOverlay(progress);
 
     let attempt = 1;
     let cardsToProcess = visibleCards;
 
     while (cardsToProcess.length > 0 && attempt <= maxAttempts) {
-      if (attempt > 1) {
-        debug.log(
-          `🔁 Retrying ${cardsToProcess.length} job cards (attempt ${attempt}/${maxAttempts})`
-        );
+      // Check before each attempt with logging
+      debug.log(`[Attempt ${attempt} Start] hideReposted = ${filterSettings.hideReposted}`);
+      if (!filterSettings.hideReposted) {
+        debug.log("⏸️ Reposted filter turned off, cancelling scan");
+        cancelled = true;
+        break;
       }
 
-      const { repostedCount, skippedCards: newlySkipped } =
-        await processJobCards(cardsToProcess, attempt, maxAttempts);
+      if (attempt > 1) {
+        debug.log(`🔁 Retrying ${cardsToProcess.length} job cards (attempt ${attempt}/${maxAttempts})`);
+      }
 
-      totalReposted += repostedCount;
+      const result = await processJobCards(cardsToProcess, attempt, maxAttempts, progress, processedIds, dupes);
+      
+      if (result.cancelled) {
+        cancelled = true;
+        totalReposted += result.repostedCount;
+        break;
+      }
 
-      skippedCards = newlySkipped.filter(
-        (card) => card && document.contains(card) && card.style.display !== "none"
+      totalReposted += result.repostedCount;
+
+      skippedCards = result.skippedCards.filter(
+        (card) => card && document.contains(card) && isScannableElement(card) && card.style.display !== "none"
       );
 
-      if (skippedCards.length === 0) {
-        break;
-      }
+      if (skippedCards.length === 0) break;
 
       attempt++;
-
-      if (attempt > maxAttempts) {
-        break;
-      }
+      if (attempt > maxAttempts) break;
 
       await wait(1500);
       cardsToProcess = skippedCards;
     }
   } finally {
-    if (skippedCards.length > 0) {
-      debug.warn(
-        `⚠️ Could not verify ${skippedCards.length} job cards after ${maxAttempts} attempts`
-      );
+    if (cancelled) {
+      hideScanOverlay(`Cancelled • scanned ${progress.processed} of ${progress.total}`);
+      debug.log(`⏸️ Scan cancelled by user after processing ${progress.processed} jobs`);
+    } else {
+      if (skippedCards.length > 0) {
+        debug.warn(`⚠️ Could not verify ${skippedCards.length} job cards after ${maxAttempts} attempts`);
+      }
+      hideScanOverlay(`Done • hid ${totalReposted} reposted job${totalReposted === 1 ? "" : "s"}`);
+      debug.log(`✅ Scan complete! Found and hid ${totalReposted} reposted jobs`);
     }
-
-    debug.log(`✅ Scan complete! Found and hid ${totalReposted} reposted jobs`);
     isScanning = false;
   }
 }
