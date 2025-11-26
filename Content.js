@@ -8,15 +8,24 @@ const SCAN_DELAY_BASE_MS = 1400;          // base delay between card clicks
 const SCAN_DELAY_JITTER_MS = 800;         // additional random delay
 const SCAN_BATCH_SIZE = 15;                // cards per batch
 const SCAN_BATCH_COOLDOWN_MS = 5000;     // cooldown between batches
+const ALLOW_BACKGROUND_SCAN = true;       // Set to false to pause when tab is hidden
+const BACKGROUND_SCAN_SLOWDOWN = 1.0;     // Multiplier for delays when tab is hidden
 let consecutiveDetailMisses = 0;
 
 function humanDelayMs() {
-  return SCAN_DELAY_BASE_MS + Math.random() * SCAN_DELAY_JITTER_MS;
+  const baseDelay = SCAN_DELAY_BASE_MS + Math.random() * SCAN_DELAY_JITTER_MS;
+  // Slow down when tab is hidden to be more conservative
+  if (document.visibilityState === "hidden" && ALLOW_BACKGROUND_SCAN) {
+    return baseDelay * BACKGROUND_SCAN_SLOWDOWN;
+  }
+  return baseDelay;
 }
 
 async function pauseIfHidden() {
-  while (document.visibilityState === "hidden") {
-    await wait(1000);
+  if (!ALLOW_BACKGROUND_SCAN) {
+    while (document.visibilityState === "hidden") {
+      await wait(1000);
+    }
   }
 }
 
@@ -627,12 +636,15 @@ async function processJobCards(jobCards, attempt, maxAttempts, progressState, pr
     }
 
     processedInBatch++;
-    await pauseIfHidden();
-    await wait(humanDelayMs());
+    await pauseIfHidden(); // Will no-op if ALLOW_BACKGROUND_SCAN is true
+    await wait(humanDelayMs()); // Automatically slower when hidden
 
     if (processedInBatch % SCAN_BATCH_SIZE === 0 && i < jobCards.length - 1) {
-      debug.log(`🛑 Cooling down for ${SCAN_BATCH_COOLDOWN_MS}ms after ${SCAN_BATCH_SIZE} cards`);
-      await wait(SCAN_BATCH_COOLDOWN_MS);
+      const cooldown = document.visibilityState === "hidden" && ALLOW_BACKGROUND_SCAN
+        ? SCAN_BATCH_COOLDOWN_MS * BACKGROUND_SCAN_SLOWDOWN
+        : SCAN_BATCH_COOLDOWN_MS;
+      debug.log(`🛑 Cooling down for ${cooldown}ms after ${SCAN_BATCH_SIZE} cards`);
+      await wait(cooldown);
       
       // Re-check filter after cooldown with logging
       debug.log(`[Post-Cooldown Check] hideReposted = ${filterSettings.hideReposted}`);
